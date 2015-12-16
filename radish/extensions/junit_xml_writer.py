@@ -32,22 +32,6 @@ class JUnitXMLWriter(object):
     def __init__(self):
         after.all(self.generate_junit_xml)
 
-    def _get_element_from_model(self, what, model):
-        """
-            Create a etree.Element from a given model
-        """
-        duration = str(model.duration.total_seconds()) if model.starttime and model.endtime else ""
-        return etree.Element(
-            what,
-            name=model.sentence,
-            id=str(model.id),
-            #result=model.state,
-            #starttime=utils.datetime_to_str(model.starttime),
-            #endtime=utils.datetime_to_str(model.endtime),
-            time=duration,
-            #testfile=model.path
-        )
-
     def _strip_ansi(self, text):
         """
             Strips ANSI modifiers from the given text
@@ -62,46 +46,60 @@ class JUnitXMLWriter(object):
         if not features:
             raise RadishError("No features given to generate JUnit xml file")
 
-        duration = timedelta()
+        duration = 0
         for feature in features:
             if feature.state in [Step.State.PASSED, Step.State.FAILED]:
-                duration += feature.duration
+                duration += feature.duration.total_seconds()
 
         testsuites_element = etree.Element(
             "testsuites",
-            #starttime=utils.datetime_to_str(features[0].starttime),
-            #endtime=utils.datetime_to_str(features[-1].endtime),
-            time=str(duration.total_seconds()),
+            time=str(duration),
             name=features[0].path
-            #agent="{0}@{1}".format(getuser(), gethostname())
         )
 
         for feature in features:
             if not feature.has_to_run(world.config.scenarios, world.config.feature_tags, world.config.scenario_tags):
                 continue
 
-            feature_element = self._get_element_from_model("testsuites", feature)
+            testcase_counter = 0
+            failure_counter = 0
+            skip_counter = 0
+            for scenario in (s for s in feature.all_scenarios if not isinstance(s, (ScenarioOutline, ScenarioLoop))):
+                for step in scenario.all_steps:
+                    testcase_counter += 1
+                    if step.state is Step.State.FAILED:
+                        failure_counter += 1
 
-            description_element = etree.Element("description")
-            description_element.text = etree.CDATA("\n".join(feature.description))
+            feature_duration = str(feature.duration.total_seconds()) if feature.starttime and feature.endtime else ""
+            feature_element = etree.Element(
+                "testsuite",
+                name=feature.path,
+                tests=str(testcase_counter),
+                errors=str(failure_counter),
+                skips=str(0),
+                time=str(feature_duration)
+                )
 
             for scenario in (s for s in feature.all_scenarios if not isinstance(s, (ScenarioOutline, ScenarioLoop))):
                 if not scenario.has_to_run(world.config.scenarios, world.config.feature_tags, world.config.scenario_tags):
                     continue
-                scenario_element = self._get_element_from_model("testsuite", scenario)
 
                 for step in scenario.all_steps:
-                    step_element = self._get_element_from_model("testcase", step)
+                    step_duration = str(step.duration.total_seconds()) if step.starttime and step.endtime else ""
+                    step_element = etree.Element(
+                        "testcase",
+                        name=step.sentence,
+                        classname=feature.path+"."+scenario.sentence,
+                        time=str(step_duration)
+                    )
                     if step.state is Step.State.FAILED:
                         failure_element = etree.Element(
                             "failure",
-                            #type=step.failure.name,
                             message=step.failure.reason
                         )
                         failure_element.text = etree.CDATA(self._strip_ansi(step.failure.traceback))
                         step_element.append(failure_element)
-                    scenario_element.append(step_element)
-                feature_element.append(scenario_element)
+                    feature_element.append(step_element)
             testsuites_element.append(feature_element)
 
         with open(world.config.junit_xml, "w+") as f:
